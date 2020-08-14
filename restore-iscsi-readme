@@ -1,0 +1,105 @@
+The original server initator name is iqn.2020-08.com.redhat and the root disk is presented through 2 targets:
+
+iqn.2020-08.com.redhat:target1,192.168.122.253,3260,1,default
+iqn.2020-08.com.redhat:target2,192.168.122.253,3260,1,default
+
+The new server initiator name used in the demo is iqn.2020-08.com.redhat:rear and it's mapped to iscsi disk presented via the below targets:
+
+iqn.2020-08.com.redhat:target3,192.168.122.253,3260,1,default
+iqn.2020-08.com.redhat:target4,192.168.122.253,3260,1,default
+
+[rear-config-file]
+
+# cat /etc/rear/local.conf 
+AUTOEXCLUDE_MULTIPATH=n
+BOOT_OVER_SAN=y
+COPY_AS_IS=( "${COPY_AS_IS[@]}" /var/lib/iscsi /etc/iscsi )
+PROGS=( "${PROGS[@]}" iscsiadm iscsid )
+LIBS=( "${LIBS[@]}" libaio* )
+OUTPUT=ISO
+OUTPUT_URL=file:///mnt/rescue_system/
+BACKUP=NETFS
+BACKUP_URL=nfs://nfssrv/nfs/rear
+
+[recovery-steps]
+
+01- Boot in ReaR recovery mode using the rescue media
+
+02- Start multipathd
+  # /bin/multipathd 
+
+03- Modify the iscsi initiator name & Start iscsid
+  # echo 'InitiatorName=iqn.2020-08.com.redhat:rear' > /etc/iscsi/initiatorname.iscsi 
+  # /bin/iscsid 
+
+04- Discover & Loging
+  # iscsiadm --mode discoverydb --type sendtargets --portal 192.168.122.253 --discover
+  # iscsiadm --mode node --targetname iqn.2020-08.com.redhat:target3 --portal 192.168.122.253 --login
+  # iscsiadm --mode node --targetname iqn.2020-08.com.redhat:target4 --portal 192.168.122.253 --login
+  
+05- Find out the new wwid of the new device
+  # multipath -ll
+    mpathb (360014057497c01aebf6435da57392be1) dm-0 LIO-ORG ,block2          
+    size=10G features='0' hwhandler='0' wp=rw
+    |-+- policy='service-time 0' prio=1 status=active
+    | `- 6:0:0:0 sda 8:0  active ready running
+    `-+- policy='service-time 0' prio=1 status=enabled
+      `- 7:0:0:0 sdb 8:16 active ready running
+
+06- Edit /etc/multipath.conf and add an alias with the origianl disk name (mpatha)
+  # cat /etc/multipath.conf  
+    defaults {
+      find_multipaths yes
+      user_friendly-names yes
+    }
+
+    blacklist {
+    }
+
+    multipaths { 
+      multipath { 
+        wwid	360014057497c01aebf6435da57392be1
+        alias	mpatha
+      }
+    }
+    
+07- Reload multipathd
+  # /bin/multipathd reconfigure
+
+08- Verify that the new device exists (with the original name)
+  # multipath -ll
+    mpatha (360014057497c01aebf6435da57392be1) dm-0 LIO-ORG ,block2          
+    size=10G features='0' hwhandler='0' wp=rw
+    |-+- policy='service-time 0' prio=1 status=active
+    | `- 6:0:0:0 sda 8:0  active ready running
+    `-+- policy='service-time 0' prio=1 status=enabled
+      `- 7:0:0:0 sdb 8:16 active ready running
+
+09- Run the rear recover command to perform the restore/migration. The rescue system then recreates the partition layout and filesystems: 
+  # rear recovery
+
+10- copy the archive from its storage, then unpack the files into /mnt/local/	
+  # scp root@nfssrv:/nfs/rear/rhel78/backup.tar.gz /mnt/local/
+  # tar xf /mnt/local/backup.tar.gz -C /mnt/local/
+  
+11- Modify the GRUB_CMDLINE_LINUX with the correct initiator and target names
+  # cat /etc/default/grub | grep GRUB_CMDLINE_LINUX
+    GRUB_CMDLINE_LINUX="crashkernel=auto rd.lvm.lv=rhel/root netroot=iscsi:@192.168.122.253::3260::iqn.2020-08.com.redhat:target3 rd.iscsi.initiator=iqn.2020-08.com.redhat:rear netroot=iscsi:@192.168.122.253::3260::iqn.2020-08.com.redhat:target4 rd.lvm.lv=rhel/home rd.lvm.lv=rhel/swap rhgb quiet ip=eth0:dhcp"
+
+12-  Ensure that SELinux relabels the files on the next boot: 
+  # touch /mnt/local/.autorelabel
+
+13- Finish the recovery by entering exit. ReaR will then reinstall the boot loader. After that, reboot the system:
+  # exit
+  # reboot
+
+
+
+
+
+
+
+
+
+
+
